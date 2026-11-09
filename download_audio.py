@@ -319,6 +319,19 @@ def find_existing(folder: Path, video_id: str | None, title: str | None) -> Path
     return None
 
 
+def pot_server_home() -> Path | None:
+    """Каталог server из bgutil, который выпускает PO-токен на каждый ролик."""
+    candidates = (
+        Path.home() / "bgutil-ytdlp-pot-provider" / "server",
+        Path.home() / ".local" / "share" / "bgutil-ytdlp-pot-provider" / "server",
+        Path(__file__).resolve().parent / "bgutil-ytdlp-pot-provider" / "server",
+    )
+    for path in candidates:
+        if (path / "src" / "generate_once.ts").is_file():
+            return path
+    return None
+
+
 def _po_token_arg(value: str) -> str:
     token = value.strip()
     if re.fullmatch(r"[^+\s]+\+.+", token) is None:
@@ -363,8 +376,19 @@ def _ydl_options(
         options["js_runtimes"] = js_runtimes
     if remote_components:
         options["remote_components"] = remote_components
+    extractor_args: dict = {}
+    youtube_args: dict[str, list[str]] = {}
+    if server := pot_server_home():
+        extractor_args["youtubepot-bgutilscript"] = {"server_home": [str(server)]}
+        # У клиентов по умолчанию ссылка на звук приходит без PO-токена и YouTube отвечает 403.
+        # mweb этот токен запрашивает, а для возрастных роликов yt-dlp сам добавит web_creator.
+        youtube_args["player_client"] = ["mweb"]
     if po_tokens:
-        options["extractor_args"] = {"youtube": {"po_token": list(po_tokens)}}
+        youtube_args["po_token"] = list(po_tokens)
+    if youtube_args:
+        extractor_args["youtube"] = youtube_args
+    if extractor_args:
+        options["extractor_args"] = extractor_args
     return options
 
 
@@ -548,6 +572,16 @@ def main(argv: list[str] | None = None) -> int:
     say(f"Ссылок: {len(links)}")
     say(f"Папка: {output}")
     say("JavaScript: " + ", ".join(f"{name} ({cfg['path']})" for name, cfg in js_runtimes.items()))
+    if server := pot_server_home():
+        say(f"PO-токен: {server}")
+    else:
+        print(
+            "Генератор PO-токенов не найден. YouTube часто отвечает HTTP 403 без токена на каждый ролик.\n"
+            "Нужны пакет bgutil-ytdlp-pot-provider и каталог ~/bgutil-ytdlp-pot-provider "
+            "(ветка той же версии, что у пакета), затем в его server/: "
+            "deno install --allow-scripts=npm:canvas --frozen",
+            file=sys.stderr,
+        )
     if remote_components:
         print(
             "Пакет yt-dlp-ejs не найден. Скрипты решателя будут скачаны с GitHub. "

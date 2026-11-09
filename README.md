@@ -127,10 +127,20 @@ python3 download_audio.py links.txt ./music --cookies cookies.txt
 
 Подробности у yt-dlp: [как передать cookies](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) и [как их экспортировать](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
 
-Если cookies уже переданы, а в логе остаётся `web_creator client https formats require a GVS PO Token`, YouTube отбросил форматы этого клиента. Остальные клиенты после установки Deno или Node обычно всё равно отдают звук. Если нет, токен можно передать явно:
+## PO-токен
+
+YouTube привязывает PO-токен к конкретному ролику. Без него страница может открыться, а сама загрузка звука получить `HTTP Error 403`, либо клиент `web_creator` (нужен возрастным роликам) отбросит свои форматы. Вручную передавать `--po-token` не нужно: токен живёт недолго и для каждого ролика свой.
+
+Скрипт берёт токен у [bgutil-ytdlp-pot-provider](https://github.com/Brainicism/bgutil-ytdlp-pot-provider). Пакет ставится из `requirements.txt`. Рядом нужен исходник генератора той же версии, что и пакет (сейчас 2.0.2), и Deno:
 
 ```bash
-python3 download_audio.py links.txt ./music --cookies cookies.txt --po-token "web_creator.gvs+ТОКЕН"
+git clone --depth 1 --branch 2.0.2 https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git "$HOME/bgutil-ytdlp-pot-provider"
+cd "$HOME/bgutil-ytdlp-pot-provider/server"
+deno install --allow-scripts=npm:canvas --frozen
 ```
 
-Как достать токен из браузера, описано в [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). Токен живёт недолго, его не нужно сохранять в git.
+Скрипт ищет этот каталог в `~/bgutil-ytdlp-pot-provider/server`. В логе перед загрузкой должна быть строка `PO-токен: ...`. Дальше для каждого ролика yt-dlp пишет `Generating a gvs PO Token for mweb client via bgutil script`. Строка про `127.0.0.1:4416/ping` при этом нормальна: HTTP-сервер не запущен, токен выпускает скрипт.
+
+Клиент `mweb` выбран специально. Клиенты по умолчанию отдают ссылку без токена, и загрузка заканчивается `HTTP Error 403`. Для возрастного ролика yt-dlp дополнительно запрашивает клиент `web_creator` и токен для него же, отдельно `--po-token` передавать не нужно. Cookies аккаунта, которому ролик уже доступен, по-прежнему нужны.
+
+`--po-token` остаётся только если генератор недоступен и токен уже есть на руках. Как его достать вручную, описано в [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide).
