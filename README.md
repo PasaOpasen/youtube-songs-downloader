@@ -6,12 +6,19 @@
 
 ## Установка
 
-Нужны Python 3.11+ и пакет из `requirements.txt`:
+Нужны Python 3.11+, пакеты из `requirements.txt` и JavaScript-движок. Без движка YouTube не отдаёт звуковую дорожку: у ролика остаются только картинки, и скрипт пишет `Requested format is not available`.
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
+
+`yt-dlp[default]` ставит и сам yt-dlp, и пакет решателя `yt-dlp-ejs`. Движок — один из двух:
+
+- [Deno](https://docs.deno.com/runtime/getting_started/installation/) 2.3 или новее. Его yt-dlp использует в первую очередь.
+- [Node.js](https://nodejs.org) 22 или новее.
+
+Скрипт ищет `deno`, `node` и `qjs` в `PATH`, в `~/.deno/bin`, в `~/.local/bin` и в `.tools` рядом с собой. Если движка нет, загрузка не начинается.
 
 Дальше команды даны как `python3 download_audio.py`. Если ставили в виртуальное окружение, вызывайте `.venv/bin/python download_audio.py`.
 
@@ -119,3 +126,11 @@ python3 download_audio.py links.txt ./music --cookies cookies.txt
 Перед загрузкой скрипт проверяет, что в cookies есть записи для `youtube.com`. Если их нет, он предупредит и всё равно пойдёт по ссылкам: открытые ролики при этом скачиваются, возрастные — нет.
 
 Подробности у yt-dlp: [как передать cookies](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp) и [как их экспортировать](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies).
+
+Если cookies уже переданы, а в логе остаётся `web_creator client https formats require a GVS PO Token`, YouTube отбросил форматы этого клиента. Остальные клиенты после установки Deno или Node обычно всё равно отдают звук. Если нет, токен можно передать явно:
+
+```bash
+python3 download_audio.py links.txt ./music --cookies cookies.txt --po-token "web_creator.gvs+ТОКЕН"
+```
+
+Как достать токен из браузера, описано в [PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide). Токен живёт недолго, его не нужно сохранять в git.

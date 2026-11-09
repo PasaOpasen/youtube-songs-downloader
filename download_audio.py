@@ -15,8 +15,11 @@ cookies аккаунта, которому YouTube этот ролик уже п
 from __future__ import annotations
 
 import argparse
+import os
 import random
 import re
+import shutil
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -43,6 +46,14 @@ DEFAULT_PAUSE_SECONDS = 10.0
 # Пауза yt-dlp между его собственными HTTP-запросами при разборе страницы.
 REQUEST_SLEEP_SECONDS = 2.0
 EXTRA_PAUSE_SECONDS = 4.0
+# deno >= 2.3, node >= 22. Bun новее 1.3.14 yt-dlp уже не поддерживает.
+_JS_RUNTIME_SPECS = (
+    ("deno", ("deno",), (2, 3, 0), None),
+    ("node", ("node", "nodejs"), (22, 0, 0), None),
+    ("quickjs", ("qjs",), (), None),
+    ("bun", ("bun",), (1, 2, 11), (1, 3, 14)),
+)
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 ID_IN_NAME_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
 YOUTUBE_HOSTS = {
@@ -93,7 +104,9 @@ class _CliLogger:
 
 
 def _plain_error(exc: BaseException) -> str:
-    text = re.sub(r"^ERROR:\s*", "", " ".join(str(exc).split()))
+    text = _ANSI_RE.sub("", " ".join(str(exc).split()))
+    while text.startswith("ERROR:"):
+        text = text.removeprefix("ERROR:").strip()
     if isinstance(exc, CookieLoadError):
         cause = exc.__cause__ or exc.__context__
         if cause is not None:
@@ -122,6 +135,77 @@ def parse_browser_spec(spec: str) -> BrowserCookies:
             names = ", ".join(sorted(name.lower() for name in SUPPORTED_KEYRINGS))
             raise ValueError(f"связка ключей «{keyring}» не поддерживается. Доступны: {names}")
     return browser_name, profile, keyring, container
+
+
+def _parse_version(text: str) -> tuple[int, ...]:
+    match = re.search(r"(\d+)\.(\d+)\.(\d+)", text)
+    if match is None:
+        return ()
+    return tuple(int(part) for part in match.groups())
+
+
+def _version_ok(version: tuple[int, ...], minimum: tuple[int, ...], maximum: tuple[int, ...] | None) -> bool:
+    if not version or not minimum:
+        return True
+    if version < minimum:
+        return False
+    return maximum is None or version <= maximum
+
+
+def _runtime_version(path: str) -> tuple[int, ...]:
+    try:
+        completed = subprocess.run(
+            [path, "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return ()
+    return _parse_version(f"{completed.stdout}\n{completed.stderr}")
+
+
+def _runtime_search_dirs() -> list[Path]:
+    return [
+        Path.home() / ".deno" / "bin",
+        Path.home() / ".local" / "bin",
+        Path(__file__).resolve().parent / ".tools",
+    ]
+
+
+def find_js_runtimes() -> dict[str, dict[str, str]]:
+    """Найти движки, которыми yt-dlp решает JS-задачу YouTube."""
+    found: dict[str, dict[str, str]] = {}
+    extra_dirs = _runtime_search_dirs()
+    for name, binaries, minimum, maximum in _JS_RUNTIME_SPECS:
+        path = None
+        for binary in binaries:
+            located = shutil.which(binary)
+            if located:
+                path = located
+                break
+            for directory in extra_dirs:
+                candidate = directory / binary
+                if candidate.is_file() and os.access(candidate, os.X_OK):
+                    path = str(candidate)
+                    break
+            if path:
+                break
+        if path is None:
+            continue
+        if not _version_ok(_runtime_version(path), minimum, maximum):
+            continue
+        found[name] = {"path": path}
+    return found
+
+
+def ejs_package_available() -> bool:
+    try:
+        import yt_dlp_ejs  # noqa: F401
+    except ImportError:
+        return False
+    return True
 
 
 def _browser_spec_arg(value: str) -> BrowserCookies:
@@ -235,11 +319,23 @@ def find_existing(folder: Path, video_id: str | None, title: str | None) -> Path
     return None
 
 
+def _po_token_arg(value: str) -> str:
+    token = value.strip()
+    if re.fullmatch(r"[^+\s]+\+.+", token) is None:
+        raise argparse.ArgumentTypeError(
+            "ожидается CLIENT.CONTEXT+ТОКЕН, например web_creator.gvs+...."
+        )
+    return token
+
+
 def _ydl_options(
     output: Path,
     *,
     cookiefile: str | None = None,
     cookiesfrombrowser: BrowserCookies | None = None,
+    js_runtimes: dict[str, dict[str, str]] | None = None,
+    po_tokens: list[str] | None = None,
+    remote_components: list[str] | None = None,
 ) -> dict:
     options: dict = {
         "noplaylist": True,
@@ -263,6 +359,12 @@ def _ydl_options(
         options["cookiefile"] = cookiefile
     if cookiesfrombrowser:
         options["cookiesfrombrowser"] = cookiesfrombrowser
+    if js_runtimes:
+        options["js_runtimes"] = js_runtimes
+    if remote_components:
+        options["remote_components"] = remote_components
+    if po_tokens:
+        options["extractor_args"] = {"youtube": {"po_token": list(po_tokens)}}
     return options
 
 
@@ -292,6 +394,9 @@ def process_url(
     *,
     cookiefile: str | None = None,
     cookiesfrombrowser: BrowserCookies | None = None,
+    js_runtimes: dict[str, dict[str, str]] | None = None,
+    po_tokens: list[str] | None = None,
+    remote_components: list[str] | None = None,
 ) -> str:
     video_id = video_id_from_url(url)
     existing = find_existing(output, video_id, None)
@@ -303,7 +408,14 @@ def process_url(
     # без второго прохода по YouTube.
     pacer.before_request("перед запросом сведений о видео")
     with yt_dlp.YoutubeDL(
-        _ydl_options(output, cookiefile=cookiefile, cookiesfrombrowser=cookiesfrombrowser)
+        _ydl_options(
+            output,
+            cookiefile=cookiefile,
+            cookiesfrombrowser=cookiesfrombrowser,
+            js_runtimes=js_runtimes,
+            po_tokens=po_tokens,
+            remote_components=remote_components,
+        )
     ) as ydl:
         info = ydl.extract_info(url, download=False)
         if not isinstance(info, dict):
@@ -358,6 +470,17 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--po-token",
+        action="append",
+        default=[],
+        type=_po_token_arg,
+        metavar="CLIENT.CONTEXT+TOKEN",
+        help=(
+            "PO-токен YouTube, если форматы клиента отброшены без него. "
+            "Пример: web_creator.gvs+XXX. Можно указать несколько раз"
+        ),
+    )
+    parser.add_argument(
         "--cookies-from-browser",
         type=_browser_spec_arg,
         metavar="BROWSER[+KEYRING][:PROFILE][::CONTAINER]",
@@ -401,6 +524,18 @@ def main(argv: list[str] | None = None) -> int:
 
     output.mkdir(parents=True, exist_ok=True)
 
+    js_runtimes = find_js_runtimes()
+    if not js_runtimes:
+        print(
+            "Не найден JavaScript-движок. Без него YouTube не отдаёт звук, только картинки.\n"
+            "Поставьте Deno 2.3+ (предпочтительно) или Node.js 22+ и повторите запуск.\n"
+            "Deno: https://docs.deno.com/runtime/getting_started/installation/\n"
+            "Node.js: https://nodejs.org",
+            file=sys.stderr,
+        )
+        return 1
+    remote_components = None if ejs_package_available() else ["ejs:github"]
+
     cookiefile: str | None = None
     if args.cookies is not None:
         cookie_path = args.cookies.expanduser()
@@ -412,6 +547,13 @@ def main(argv: list[str] | None = None) -> int:
 
     say(f"Ссылок: {len(links)}")
     say(f"Папка: {output}")
+    say("JavaScript: " + ", ".join(f"{name} ({cfg['path']})" for name, cfg in js_runtimes.items()))
+    if remote_components:
+        print(
+            "Пакет yt-dlp-ejs не найден. Скрипты решателя будут скачаны с GitHub. "
+            'Надёжнее поставить зависимости заново: pip install -U -r requirements.txt',
+            file=sys.stderr,
+        )
     if cookiefile or cookiesfrombrowser:
         if cookiesfrombrowser:
             browser_name, profile, keyring, container = cookiesfrombrowser
@@ -457,6 +599,9 @@ def main(argv: list[str] | None = None) -> int:
                 pacer,
                 cookiefile=cookiefile,
                 cookiesfrombrowser=cookiesfrombrowser,
+                js_runtimes=js_runtimes,
+                po_tokens=args.po_token,
+                remote_components=remote_components,
             )
         except YoutubeDLError as exc:
             failed += 1
