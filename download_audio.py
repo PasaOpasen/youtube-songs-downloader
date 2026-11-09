@@ -34,10 +34,10 @@ AUDIO_SUFFIXES = {
     ".weba",
     ".webm",
 }
-MIN_PAUSE_SECONDS = 5.0
-DEFAULT_PAUSE_SECONDS = 10.0
+MIN_PAUSE_SECONDS = 1.0
+DEFAULT_PAUSE_SECONDS = 5.0
 # Пауза yt-dlp между его собственными HTTP-запросами при разборе страницы.
-REQUEST_SLEEP_SECONDS = 3.0
+REQUEST_SLEEP_SECONDS = 2.0
 EXTRA_PAUSE_SECONDS = 4.0
 VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 ID_IN_NAME_RE = re.compile(r"\[([A-Za-z0-9_-]{11})\]")
