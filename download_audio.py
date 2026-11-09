@@ -363,7 +363,12 @@ def _ydl_options(
         "noprogress": False,
         "windowsfilenames": True,
         "logger": _CliLogger(),
-        "format": "bestaudio/best",
+        # Отдельная звуковая дорожка (DASH) обрывается 403 примерно после 1 МБ,
+        # даже с PO-токеном. Прогрессивный mp4 с картинкой и звуком качается целиком,
+        # затем ffmpeg копирует из него звук в m4a без перекодирования.
+        "format": "best[acodec!=none][vcodec!=none][protocol^=http]/18/best",
+        "http_chunk_size": 1024 * 1024,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "best"}],
         "outtmpl": "%(title)s [%(id)s].%(ext)s",
         "paths": {"home": str(output)},
         "overwrites": False,
